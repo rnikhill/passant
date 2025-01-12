@@ -11,21 +11,21 @@ import Chess
     startGameState,
   )
 
-bishopTestStr :: BoardRep
-bishopTestStr =
+testStr :: BoardRep
+testStr =
   [ ["  ", "  ", "  ", "  ", "  ", "  ", "  ", "  "],
     ["  ", "  ", "  ", "  ", "  ", "  ", "  ", "  "],
     ["  ", "  ", "  ", "  ", "  ", "  ", "  ", "  "],
     ["  ", "  ", "  ", "  ", "bP", "  ", "  ", "  "],
-    ["  ", "  ", "  ", "wB", "  ", "  ", "  ", "  "],
-    ["  ", "  ", "  ", "  ", "  ", "  ", "  ", "  "],
+    ["  ", "  ", "  ", "wR", "wP", "  ", "  ", "  "],
+    ["  ", "  ", "  ", "bP", "  ", "  ", "  ", "  "],
     ["  ", "  ", "  ", "  ", "  ", "  ", "  ", "  "],
     ["  ", "  ", "  ", "  ", "  ", "  ", "  ", "  "]
   ]
 
 main :: IO ()
 main = do
-  let gameState = if True then startGameState else mkGameState bishopTestStr
+  let gameState = if False then startGameState else mkGameState testStr
   (putStr . printBoard) gameState._board
   putStrLn ""
   let nextStates = getNextStates [] gameState

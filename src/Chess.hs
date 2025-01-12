@@ -21,7 +21,8 @@ import Data.List (intercalate)
 import Data.Maybe (listToMaybe)
 import qualified Data.Set as Set
 import Prelude
-import Debug.Trace (traceShow)
+
+-- import Debug.Trace (traceShow)
 
 data PieceType
   = Pawn
@@ -200,6 +201,7 @@ getMovesForPiece :: [GameState] -> GameState -> (PieceType, BoardIndex) -> [Move
 getMovesForPiece prevStates gameState (pType, boardIndex) = case pType of
   Pawn -> getPawnMoves (listToMaybe prevStates) gameState boardIndex
   Bishop -> getBishopMoves gameState._board gameState._toPlay boardIndex
+  Rook -> getRookMoves gameState._board gameState._toPlay boardIndex
   _ -> []
 
 getPawnMoves :: Maybe GameState -> GameState -> BoardIndex -> [Move]
@@ -257,17 +259,30 @@ safeHead (x : _) = Just x
 
 getBishopMoves :: Board -> Side -> BoardIndex -> [Move]
 getBishopMoves board side startIx@(startRank, startFile) =
-  let fwdRanks = [startRank ..]
-      bwdRanks = [startRank, startRank - 1 ..]
-      rightFiles = [startFile ..]
-      leftFiles = [startFile, startFile - 1 ..]
+  let fwdRanks = [startRank + 1 ..]
+      bwdRanks = [startRank - 1, startRank - 2 ..]
+      rightFiles = [startFile + 1 ..]
+      leftFiles = [startFile - 1, startFile - 2 ..]
       directions = [fwdRanks `zip` rightFiles, fwdRanks `zip` leftFiles, bwdRanks `zip` rightFiles, bwdRanks `zip` leftFiles]
-      validDirections = map (filter (/= startIx) . takeWhile (isValidIndex board)) directions
+   in getDirectionMoves board side startIx directions
+
+getRookMoves :: Board -> Side -> BoardIndex -> [Move]
+getRookMoves board side startIx@(startRank, startFile) =
+  let fwd = [startRank + 1 ..]
+      bwd = [startRank - 1, startRank - 2 ..]
+      right = [startFile + 1 ..]
+      left = [startFile - 1, startFile - 2 ..]
+      directions = [fwd `zip` repeat startFile, bwd `zip` repeat startFile, repeat startRank `zip` right, repeat startRank `zip` left]
+   in getDirectionMoves board side startIx directions
+
+getDirectionMoves :: Board -> Side -> BoardIndex -> [[BoardIndex]] -> [Move]
+getDirectionMoves board side startIx directions =
+  let validDirections = map (takeWhile (isValidIndex board)) directions
       (free, taken) = unzip $ map (span (isFree board)) validDirections
       captures = [x | (Just x) <- map safeHead taken, hasPieceColor board (other side) x]
       captureMoves = [NormalMove {_start = startIx, _end = x, _capture = Just NormalCapture} | x <- captures]
       nonCaptureMoves = [NormalMove {_start = startIx, _end = x, _capture = Nothing} | x <- join free]
-   in traceShow free $ map Normal $ captureMoves ++ nonCaptureMoves
+   in map Normal $ captureMoves ++ nonCaptureMoves
 
 isValidIndex :: Board -> BoardIndex -> Bool
 isValidIndex (Board arr) (rank, file) =
