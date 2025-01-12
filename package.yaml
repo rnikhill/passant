@@ -24,9 +24,12 @@ dependencies:
 - array
 - vector
 - containers
+- text
+- hashable
 
 ghc-options:
 - -Wall
+- -Werror
 - -Wcompat
 - -Widentities
 - -Wincomplete-record-updates
@@ -36,7 +39,6 @@ ghc-options:
 - -Wpartial-fields
 - -Wredundant-constraints
 - -O2
-- -Werror
 
 library:
   source-dirs: src
