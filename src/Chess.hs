@@ -17,7 +17,7 @@ import Data.Char (toUpper)
 import Data.Foldable (foldl')
 import Data.Hashable (Hashable (hashWithSalt), hashUsing)
 import Data.Int (Int8)
-import Data.List (intercalate)
+import Data.List (intercalate, partition)
 import Data.Maybe (listToMaybe)
 import qualified Data.Set as Set
 import Prelude
@@ -88,7 +88,8 @@ instance Hashable GameState where
 data NormalMove = NormalMove
   { _start :: BoardIndex,
     _end :: BoardIndex,
-    _capture :: Maybe Capture
+    _capture :: Maybe Capture,
+    _promote :: Maybe PieceType
   }
   deriving (Eq, Read, Show)
 
@@ -191,9 +192,12 @@ applyNormalMove curState move =
         Free -> error "Empty square selected as starting location for move"
         Filled piece -> Filled piece {_hasMoved = True}
       update = [(move._start, Free), (move._end, newSquare)]
+      promote = case move._promote of
+        Nothing -> update
+        Just x -> [(move._start, Free), (move._end, Filled Piece {_pieceType = x, _player = curState._toPlay, _hasMoved = True})]
       final = case move._capture of
-        (Just EnPassantCapture) -> (enPassantSquare move._start move._end, Free) : update
-        _ -> update
+        (Just EnPassantCapture) -> (enPassantSquare move._start move._end, Free) : promote
+        _ -> promote
       newBoard = board // final
    in GameState {_toPlay = other curState._toPlay, _board = Board newBoard, _drawMoveCounter = curState._drawMoveCounter + 1, _prevBoard = Just curState._board}
 
@@ -202,6 +206,8 @@ getMovesForPiece prevStates gameState (pType, boardIndex) = case pType of
   Pawn -> getPawnMoves (listToMaybe prevStates) gameState boardIndex
   Bishop -> getBishopMoves gameState._board gameState._toPlay boardIndex
   Rook -> getRookMoves gameState._board gameState._toPlay boardIndex
+  Queen -> getQueenMoves gameState._board gameState._toPlay boardIndex
+  Knight -> getKnightMoves gameState._board gameState._toPlay boardIndex
   _ -> []
 
 getPawnMoves :: Maybe GameState -> GameState -> BoardIndex -> [Move]
@@ -222,13 +228,19 @@ getSingleSquareMove state ix@(rank, file) =
           then (rank + 1, file)
           else (rank - 1, file)
       canMoveTo = isValidIndex state._board target && isFree state._board target
-   in ([Normal NormalMove {_start = ix, _end = target, _capture = Nothing} | canMoveTo])
+      promote = state._toPlay == White && rank == 7 || state._toPlay == Black && rank == 2
+   in if canMoveTo
+        then
+          if promote
+            then getPromotionMoves ix Nothing target
+            else [mkNonCaptureMove ix target]
+        else []
 
 getDoubleSquareMove :: GameState -> BoardIndex -> [Move]
 getDoubleSquareMove state ix@(rank, file) =
   let target = if state._toPlay == White then (4, file) else (5, file)
       canMoveTo = (state._toPlay == White && rank == 2 || state._toPlay == Black && rank == 7) && isFree state._board target
-   in ([Normal NormalMove {_start = ix, _end = target, _capture = Nothing} | canMoveTo])
+   in ([Normal NormalMove {_start = ix, _end = target, _capture = Nothing, _promote = Nothing} | canMoveTo])
 
 getPawnCaptures :: GameState -> BoardIndex -> [Move]
 getPawnCaptures state ix@(rank, file) =
@@ -237,7 +249,16 @@ getPawnCaptures state ix@(rank, file) =
       otherSide = if state._toPlay == Black then White else Black
       enemyPieces = Set.fromList [ix' | (ix', _) <- filter (uncurry $ (flip $ const isSide) otherSide) (getPieceLocations state._board)]
       matches = filter (`Set.member` enemyPieces) valid
-   in [Normal NormalMove {_start = ix, _end = ix', _capture = Just NormalCapture} | ix' <- matches]
+      promote = state._toPlay == White && rank == 7 || state._toPlay == Black && rank == 2
+   in if promote
+        then matches >>= getPromotionMoves ix (Just NormalCapture)
+        else [mkCaptureMove ix ix' | ix' <- matches]
+
+getPromotionMoves :: BoardIndex -> Maybe Capture -> BoardIndex -> [Move]
+getPromotionMoves startIx capture endIx =
+  let move = NormalMove {_start = startIx, _end = endIx, _capture = capture, _promote = Nothing}
+      pieces = [Queen, Knight, Bishop, Rook]
+   in [Normal $ move {_promote = Just piece} | piece <- pieces]
 
 getEnPassant :: Board -> GameState -> BoardIndex -> [Move]
 getEnPassant prevBoard state (rank, file) =
@@ -250,7 +271,7 @@ getEnPassant prevBoard state (rank, file) =
         Black -> (7, file')
       canCapture ix = hasOppPawn state._board ix && not (hasOppPawn state._board (getStartingSquare ix)) && not (hasOppPawn prevBoard ix) && hasOppPawn prevBoard (getStartingSquare ix)
       destSquares = filter canCapture [(rank, file - 1), (rank, file + 1)]
-      mkMove (rank', file') = Normal NormalMove {_start = (rank, file), _end = (rank', file'), _capture = Just EnPassantCapture}
+      mkMove (rank', file') = Normal NormalMove {_start = (rank, file), _end = (rank', file'), _capture = Just EnPassantCapture, _promote = Nothing}
    in map mkMove destSquares
 
 safeHead :: [a] -> Maybe a
@@ -275,14 +296,37 @@ getRookMoves board side startIx@(startRank, startFile) =
       directions = [fwd `zip` repeat startFile, bwd `zip` repeat startFile, repeat startRank `zip` right, repeat startRank `zip` left]
    in getDirectionMoves board side startIx directions
 
+getQueenMoves :: Board -> Side -> BoardIndex -> [Move]
+getQueenMoves board side startIx = getRookMoves board side startIx ++ getBishopMoves board side startIx
+
+getKnightMoves :: Board -> Side -> BoardIndex -> [Move]
+getKnightMoves board side startIx@(startRank, startFile) =
+  let potentialDestinations =
+        [ (startRank - 2, startFile - 1),
+          (startRank - 2, startFile + 1),
+          (startRank + 2, startFile - 1),
+          (startRank + 2, startFile + 1),
+          (startRank - 1, startFile - 2),
+          (startRank - 1, startFile + 2),
+          (startRank + 1, startFile - 2),
+          (startRank + 1, startFile + 2)
+        ]
+      validDestinations = [x | x <- potentialDestinations, isValidIndex board x, not $ hasPieceColor board side x]
+      (free, capture) = partition (isFree board) validDestinations
+   in map (mkNonCaptureMove startIx) free ++ map (mkCaptureMove startIx) capture
+
+mkCaptureMove :: BoardIndex -> BoardIndex -> Move
+mkCaptureMove startIx endIx = Normal $ NormalMove {_start = startIx, _end = endIx, _capture = Just NormalCapture, _promote = Nothing}
+
+mkNonCaptureMove :: BoardIndex -> BoardIndex -> Move
+mkNonCaptureMove startIx endIx = Normal $ NormalMove {_start = startIx, _end = endIx, _capture = Nothing, _promote = Nothing}
+
 getDirectionMoves :: Board -> Side -> BoardIndex -> [[BoardIndex]] -> [Move]
 getDirectionMoves board side startIx directions =
   let validDirections = map (takeWhile (isValidIndex board)) directions
       (free, taken) = unzip $ map (span (isFree board)) validDirections
       captures = [x | (Just x) <- map safeHead taken, hasPieceColor board (other side) x]
-      captureMoves = [NormalMove {_start = startIx, _end = x, _capture = Just NormalCapture} | x <- captures]
-      nonCaptureMoves = [NormalMove {_start = startIx, _end = x, _capture = Nothing} | x <- join free]
-   in map Normal $ captureMoves ++ nonCaptureMoves
+   in map (mkNonCaptureMove startIx) (join free) ++ map (mkCaptureMove startIx) captures
 
 isValidIndex :: Board -> BoardIndex -> Bool
 isValidIndex (Board arr) (rank, file) =
