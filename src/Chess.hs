@@ -8,7 +8,12 @@ module Chess
     startStateStr,
     mkGameState,
     BoardRep,
-    GameState (_board),
+    GameState (..),
+    Side (..),
+    PieceType (..),
+    kingIsInCheck,
+    Piece (..),
+    getPieceLocations,
   )
 where
 
@@ -20,11 +25,10 @@ import Data.Functor ((<&>))
 import Data.Hashable (Hashable (hashWithSalt), hashUsing)
 import Data.Int (Int8)
 import Data.List (intercalate, partition)
-import Data.Maybe (listToMaybe)
 import qualified Data.Set as Set
 import Prelude
 
-import Debug.Trace (traceShow)
+-- import Debug.Trace (traceShow)
 
 data PieceType
   = Pawn
@@ -77,7 +81,7 @@ type BoardRep = [[String]]
 
 data GameState = GameState
   { _toPlay :: Side,
-    _board :: Board,
+    _board :: !Board,
     _drawMoveCounter :: Int,
     _prevBoard :: Maybe Board
   }
@@ -168,14 +172,14 @@ printBoard (Board board_) =
       boardStr = "\n--------------------------------\n" `intercalate` ranks
    in boardStr
 
-getNextStates :: [GameState] -> GameState -> [GameState]
-getNextStates prevStates curState =
+getNextStates :: GameState -> [GameState]
+getNextStates curState =
   let pieces = getPieceLocations curState._board
       pieceInfo = [(side, pieceType, ix) | (ix, Piece {_player = side, _pieceType = pieceType}) <- pieces]
       whitePieces = [(pT, ix) | (White, pT, ix) <- pieceInfo]
       blackPieces = [(pT, ix) | (Black, pT, ix) <- pieceInfo]
       curPieces = if curState._toPlay == White then whitePieces else blackPieces
-      possibleMoves = curPieces >>= getMovesForPiece prevStates curState
+      possibleMoves = curPieces >>= getMovesForPiece True curState
    in map (applyMoveToState curState) possibleMoves
 
 applyMoveToState :: GameState -> Move -> GameState
@@ -203,7 +207,7 @@ applyNormalMove curState move =
       counter = case (move, oldSquare) of
         (NormalMove {_capture = Just _}, _) -> curState._drawMoveCounter + 1
         (_, Filled Piece {_pieceType = Pawn}) -> curState._drawMoveCounter + 1
-        _ -> curState._drawMoveCounter
+        _ -> 0
    in GameState {_toPlay = other curState._toPlay, _board = Board newBoard, _drawMoveCounter = counter, _prevBoard = Just curState._board}
 
 applyCastleMove :: GameState -> CastleMove -> GameState
@@ -224,22 +228,22 @@ applyCastleMove curState castleMove =
         _ -> error $ "invalid castle move: " ++ show (king, rook)
    in GameState {_toPlay = other curState._toPlay, _board = Board newBoard, _drawMoveCounter = curState._drawMoveCounter + 1, _prevBoard = Just curState._board}
 
-getMovesForPiece :: [GameState] -> GameState -> (PieceType, BoardIndex) -> [Move]
-getMovesForPiece prevStates gameState (pType, boardIndex) = case pType of
-  Pawn -> getPawnMoves (listToMaybe prevStates) gameState boardIndex
+getMovesForPiece :: Bool -> GameState -> (PieceType, BoardIndex) -> [Move]
+getMovesForPiece castle gameState (pType, boardIndex) = case pType of
+  Pawn -> getPawnMoves gameState._prevBoard gameState boardIndex
   Bishop -> getBishopMoves gameState._board gameState._toPlay boardIndex
   Rook -> getRookMoves gameState._board gameState._toPlay boardIndex
   Queen -> getQueenMoves gameState._board gameState._toPlay boardIndex
   Knight -> getKnightMoves gameState._board gameState._toPlay boardIndex
-  King -> getKingMoves gameState._board gameState._toPlay boardIndex
+  King -> getKingMoves castle gameState._board gameState._toPlay boardIndex
 
-getPawnMoves :: Maybe GameState -> GameState -> BoardIndex -> [Move]
-getPawnMoves prevState curState (rank, file) =
+getPawnMoves :: Maybe Board -> GameState -> BoardIndex -> [Move]
+getPawnMoves prevBoard curState (rank, file) =
   getForwardPawnMoves curState (rank, file)
     ++ getPawnCaptures curState (rank, file)
-    ++ case prevState of
+    ++ case prevBoard of
       Nothing -> []
-      (Just state) -> getEnPassant state._board curState (rank, file)
+      (Just prevBoard') -> getEnPassant prevBoard' curState (rank, file)
 
 getForwardPawnMoves :: GameState -> BoardIndex -> [Move]
 getForwardPawnMoves curState (rank, file) = getSingleSquareMove curState (rank, file) ++ getDoubleSquareMove curState (rank, file)
@@ -316,7 +320,7 @@ getRookMoves board side startIx@(startRank, startFile) =
       bwd = [startRank - 1, startRank - 2 ..]
       right = [startFile + 1 ..]
       left = [startFile - 1, startFile - 2 ..]
-      directions = [map (, startFile) fwd, map (, startFile) bwd, map (startRank, ) right, map (startRank, ) left]
+      directions = [map (,startFile) fwd, map (,startFile) bwd, map (startRank,) right, map (startRank,) left]
    in getDirectionMoves board side startIx directions
 
 getQueenMoves :: Board -> Side -> BoardIndex -> [Move]
@@ -338,21 +342,25 @@ getKnightMoves board side startIx@(startRank, startFile) =
       (free, capture) = partition (isFree board) validDestinations
    in map (mkNonCaptureMove startIx) free ++ map (mkCaptureMove startIx) capture
 
-getKingMoves :: Board -> Side -> BoardIndex -> [Move]
-getKingMoves board side startIx = getCastleMoves board side startIx ++ getNormalKingMoves board side startIx
+getKingMoves :: Bool -> Board -> Side -> BoardIndex -> [Move]
+getKingMoves castle board side startIx =
+  let castleMoves = if castle then getCastleMoves board side startIx else []
+   in castleMoves ++ getNormalKingMoves board side startIx
 
 getCastleMoves :: Board -> Side -> BoardIndex -> [Move]
 getCastleMoves board side startIx = case getPieceAtSquare board startIx of
   (Just Piece {_pieceType = King, _hasMoved = hasMoved, _player = color})
     | color /= side -> error "called getCastleMoves on square with opposite side king"
-    | hasMoved -> []
+    | hasMoved || not canCastle -> []
     | otherwise -> getKingsideCastle board side startIx ++ getQueensideCastle board side startIx
   _ -> error "called getCastleMoves on square without king"
+  where
+    canCastle = (side == White && startIx == (1, 5)) || (side == Black && startIx == (8, 5))
 
 getKingsideCastle :: Board -> Side -> BoardIndex -> [Move]
 getKingsideCastle board side startIx@(startRank, startFile) =
   let squaresToCheck = map (startRank,) [startFile + 1, startFile + 2]
-      free = filter (\x -> isFree board x && (not . squareIsInCheck side board startIx) x) squaresToCheck
+      free = [x | x <- squaresToCheck, isValidIndex board x, isFree board x, (not . squareIsInCheck side board startIx) x]
       allFree = length free == 2
       rook = getPieceAtSquare board (startRank, 8)
       rookCanCastle = case rook of
@@ -360,12 +368,11 @@ getKingsideCastle board side startIx@(startRank, startFile) =
         _ -> False
    in [Castle Kingside | (not . squareIsInCheck side board startIx) startIx && allFree && rookCanCastle]
 
-
 getQueensideCastle :: Board -> Side -> BoardIndex -> [Move]
 getQueensideCastle board side startIx@(startRank, startFile) =
   let squaresToCheck = map (startRank,) [startFile - 1, startFile - 2]
-      free = filter (\x -> isFree board x && (not . squareIsInCheck side board startIx) x) squaresToCheck
-      allFree = traceShow free $ length free == 2
+      free = [x | x <- squaresToCheck, isValidIndex board x, isFree board x, (not . squareIsInCheck side board startIx) x]
+      allFree = length free == 2
       rook = getPieceAtSquare board (startRank, 1)
       rookCanCastle = case rook of
         (Just Piece {_pieceType = Rook, _hasMoved = False}) -> True
@@ -377,10 +384,16 @@ squareIsInCheck :: Side -> Board -> BoardIndex -> BoardIndex -> Bool
 squareIsInCheck side (Board board) startIx ix =
   let testBoard = Board $ board // [(startIx, Free), (ix, board ! startIx)]
       attackingPieces = filter (\(_, piece) -> piece._player == other side) (getPieceLocations testBoard) <&> \(x, y) -> (y._pieceType, x)
-      testGameState = GameState {_board = testBoard, _toPlay = other side, _drawMoveCounter = 0, _prevBoard = Nothing}
-      moves = [endIx' | (Normal NormalMove {_end = endIx', _capture = Just NormalCapture}) <- (attackingPieces >>= getMovesForPiece [] testGameState)]
+      testGameState = GameState {_board = testBoard, _toPlay = other side, _drawMoveCounter = 0, _prevBoard = Just (Board board)}
+      moves = [endIx' | (Normal NormalMove {_end = endIx', _capture = Just NormalCapture}) <- attackingPieces >>= getMovesForPiece False testGameState]
    in elem ix moves
 
+kingIsInCheck :: Side -> Board -> Bool
+kingIsInCheck side board =
+  let kingIndex = [x | (x, Piece {_pieceType = King, _player = side'}) <- getPieceLocations board, side == side']
+   in case kingIndex of
+        [x] -> squareIsInCheck side board x x
+        _ -> error $ printBoard board ++ "\ninvalid board, king is not present or there are multiple of " ++ show side
 
 getNormalKingMoves :: Board -> Side -> BoardIndex -> [Move]
 getNormalKingMoves board side startIx@(startRank, startFile) =
